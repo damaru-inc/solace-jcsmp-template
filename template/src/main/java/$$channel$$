@@ -1,0 +1,253 @@
+{%- set topicInfo = [channelName, channel] | topicInfo %}
+{%- set queueInfo = [channelName, channel, topicInfo.subscribeTopic] | queueInfo %}
+{%- set className = [channelName, channel] | channelClass -%}
+{%- include 'partials/java-package' -%}
+{%- set messageClass = [channelName, channel] | messageClass -%}
+{%- set payloadClass = [channelName, channel] | payloadClass -%}
+{%- set contentType = channel | contentType -%}
+import javax.annotation.PostConstruct;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import com.solacesystems.jcsmp.BytesMessage;
+import com.solacesystems.jcsmp.BytesXMLMessage;
+{% if channel.hasSubscribe() and queueInfo.isQueue -%}
+import com.solacesystems.jcsmp.ConsumerFlowProperties;
+{% endif -%}
+{% if channel.hasPublish() -%}
+import com.solacesystems.jcsmp.DeliveryMode;
+{% endif -%}
+{%- if queueInfo.needQueue %}
+import com.solacesystems.jcsmp.EndpointProperties;
+{% endif -%}
+{%- if queueInfo.subscription %}
+import com.solacesystems.jcsmp.JCSMPErrorResponseException;
+import com.solacesystems.jcsmp.JCSMPErrorResponseSubcodeEx;
+{% endif -%}
+{% if channel.hasSubscribe() and queueInfo.isQueue -%}
+import com.solacesystems.jcsmp.FlowReceiver;
+{% endif -%}
+import com.solacesystems.jcsmp.JCSMPException;
+import com.solacesystems.jcsmp.JCSMPFactory;
+import com.solacesystems.jcsmp.JCSMPSession;
+{% if channel.hasPublish() -%}
+import com.solacesystems.jcsmp.JCSMPStreamingPublishEventHandler;
+{% endif -%}
+{%- if queueInfo.needQueue %}
+import com.solacesystems.jcsmp.Queue;
+{% endif -%}
+import com.solacesystems.jcsmp.TextMessage;
+{%- if channel.hasPublish() or not queueInfo.isQueue -%}
+import com.solacesystems.jcsmp.Topic;
+{% endif -%}
+{% if channel.hasSubscribe() -%}
+{% if not queueInfo.isQueue -%}
+import com.solacesystems.jcsmp.XMLMessageConsumer;
+{% endif -%}
+import com.solacesystems.jcsmp.XMLMessageListener;
+{% endif -%}
+{% if channel.hasPublish() -%}
+import com.solacesystems.jcsmp.XMLMessageProducer;
+{%- endif %}
+
+@Component
+public class {{ className }} {
+
+	// Channel name: {{topicInfo.channelName}}
+{%- if channel.hasPublish() %}
+	private static final String PUBLISH_TOPIC = "{{ topicInfo.publishTopic }}";
+{%- endif -%}
+{%- if channel.hasSubscribe() and not queueInfo.isQueue %}
+	private static final String SUBSCRIBE_TOPIC = "{{ topicInfo.subscribeTopic }}";
+{%- endif %}
+
+	@Autowired
+	private SolaceSession solaceSession;
+	private JCSMPSession jcsmpSession;
+	private Serializer<{{ payloadClass }}> serializer;
+{%- if channel.hasPublish() %}
+	private TextMessage textMessage = JCSMPFactory.onlyInstance().createMessage(TextMessage.class);
+	private XMLMessageProducer producer;
+{%- endif -%}
+{%- if channel.hasSubscribe() %}
+{%- if queueInfo.isQueue %}
+	private FlowReceiver flowReceiver;		
+{%- else %}
+	private XMLMessageConsumer consumer;		
+{%- endif %}
+{%- endif %}
+
+	@PostConstruct
+	public void init() throws Exception {
+		jcsmpSession = solaceSession.getSession();
+{%- if contentType %}
+		serializer = SerializerFactory.getSerializer("{{ contentType }}", {{ payloadClass }}.class);
+{%- else %}
+		serializer = SerializerFactory.getSerializer(null, {{ payloadClass }}.class);
+{%- endif %}
+{%- if queueInfo.needQueue %}
+		provisionQueue();
+{%- endif %}
+	}
+{% if channel.hasPublish() %}
+	public void initPublisher(PublishListener publishListener) throws Exception {
+		PublishEventHandler handler = new PublishEventHandler(publishListener);
+		producer = jcsmpSession.getMessageProducer(handler);
+		textMessage.setDeliveryMode(DeliveryMode.{{ channel | deliveryMode }});
+	}
+{%- endif %}
+{% if channel.hasSubscribe() %}
+{% if queueInfo.isQueue %}
+	public void subscribe({{ messageClass }}.SubscribeListener listener) throws Exception {
+		MessageListener messageListener = new MessageListener(listener);
+		final Queue queue = JCSMPFactory.onlyInstance().createQueue("{{ queueInfo.queueName }}");
+		ConsumerFlowProperties flowProps = new ConsumerFlowProperties();
+		flowProps.setEndpoint(queue);
+		flowReceiver = jcsmpSession.createFlow(messageListener, flowProps);
+		flowReceiver.start();
+	}
+{% else %}
+	public void subscribe({{ messageClass }}.SubscribeListener listener) throws Exception {
+		MessageListener messageListener = new MessageListener(listener);
+		consumer = jcsmpSession.getMessageConsumer(messageListener);
+		Topic topic = JCSMPFactory.onlyInstance().createTopic(SUBSCRIBE_TOPIC);
+		jcsmpSession.addSubscription(topic);
+		consumer.start();
+	}
+{%- endif %}
+{%- endif %}
+{% if channel.hasPublish() %}
+	private Topic formatTopic({{ topicInfo.functionParamList }}) {
+		String topicString = String.format(PUBLISH_TOPIC, {{ topicInfo.functionArgList }});
+		Topic topic = JCSMPFactory.onlyInstance().createTopic(topicString);
+		return topic;
+	}
+
+{%- set lowerMessageName = messageClass | lowerFirst %}
+{%- set lowerPayloadName = payloadClass | lowerFirst %}
+
+	public void send{{ messageClass }}({{ messageClass }} {{ lowerMessageName }}, {{ topicInfo.functionParamList }}) throws Exception {
+		Topic topic = formatTopic({{ topicInfo.functionArgList }});
+		{{ payloadClass }} payload = {{ lowerMessageName }}.getPayload();
+		String payloadString = serializer.serialize(payload);
+		textMessage.setText(payloadString);
+		producer.send(textMessage, topic);
+	}
+   
+	public void send{{ payloadClass }}({{ payloadClass }} {{ lowerPayloadName }}, {{ topicInfo.functionParamList }}) throws Exception {
+		Topic topic = formatTopic({{ topicInfo.functionArgList }});
+		String payloadString = serializer.serialize({{ lowerPayloadName }});
+		textMessage.setText(payloadString);
+		producer.send(textMessage, topic);
+	}
+   
+{%- endif %}
+
+	public void close() {
+{% if channel.hasSubscribe() %}
+{%- if queueInfo.isQueue %}
+		if (flowReceiver != null) {
+			flowReceiver.close();		
+		}
+{% else %}
+		if (consumer != null) {
+			consumer.close();		
+		}
+{% endif -%}
+{% endif %}
+		solaceSession.close();
+	}
+
+{% for param in topicInfo.params -%}
+{%- if param.enum %}
+	public static enum {{ param.type }} { {{ param.enum }} }
+{% endif -%}
+{%- endfor -%}
+{%- if channel.hasSubscribe() -%}
+{%- set lowerMessageName = messageClass | lowerFirst %}
+	class MessageListener implements XMLMessageListener {
+
+		{{ messageClass }}.SubscribeListener listener;
+		
+		public MessageListener({{ messageClass }}.SubscribeListener listener) {
+			this.listener = listener;
+		}
+		
+		@Override
+		public void onException(JCSMPException exception) {
+			listener.handleException(exception);
+		}
+
+		@Override
+		public void onReceive(BytesXMLMessage bytesXMLMessage) {
+			String text = null;
+
+			if (bytesXMLMessage instanceof  TextMessage) {
+				TextMessage textMessage = (TextMessage) bytesXMLMessage;
+				text = textMessage.getText();
+			} else if (bytesXMLMessage instanceof BytesMessage) {
+				text = new String(((BytesMessage) bytesXMLMessage).getData());
+			}
+
+			{{ payloadClass }} payload;
+
+			try {
+				payload = serializer.deserialize(text);
+				{{ messageClass }}  {{ lowerMessageName }} = new {{ messageClass }}();
+				{{ lowerMessageName }}.setMessageId(bytesXMLMessage.getMessageId());
+				{{ lowerMessageName }}.setPayload(payload);
+				{{ lowerMessageName }}.setTopic(bytesXMLMessage	.getDestination().getName());
+				listener.onReceive({{ lowerMessageName }});
+			} catch (Exception exception) {
+				listener.handleException(exception);
+			}			
+		}
+	}
+{%- endif %}
+{%- if channel.hasPublish() %}
+
+	class PublishEventHandler implements JCSMPStreamingPublishEventHandler {
+		
+		PublishListener listener;
+		
+		public PublishEventHandler(PublishListener listener) {
+			this.listener = listener;
+		}
+
+		@Override
+		public void handleError(String messageId, JCSMPException exception, long timestamp) {
+			listener.handleException(messageId, exception, timestamp);
+		}
+
+		@Override
+		public void responseReceived(String messageId) {
+			listener.onResponse(messageId);
+		}
+	}
+
+{%- endif %}
+
+{%- if queueInfo.needQueue %}
+
+	public void provisionQueue() throws Exception {
+		final Queue queue = JCSMPFactory.onlyInstance().createQueue("{{ queueInfo.queueName }}");
+		final EndpointProperties endpointProps = new EndpointProperties();
+		endpointProps.setPermission(EndpointProperties.PERMISSION_DELETE);
+		endpointProps.setAccessType(EndpointProperties.{{ queueInfo.accessType }});
+		jcsmpSession.provision(queue, endpointProps, JCSMPSession.FLAG_IGNORE_ALREADY_EXISTS);
+		{% if queueInfo.subscription -%}
+		try {
+			Topic topic = JCSMPFactory.onlyInstance().createTopic("{{ queueInfo.subscription }}");
+			jcsmpSession.addSubscription(queue, topic, JCSMPSession.WAIT_FOR_CONFIRM);
+		} catch (JCSMPErrorResponseException ex) {
+			if (ex.getSubcodeEx() != JCSMPErrorResponseSubcodeEx.SUBSCRIPTION_ALREADY_PRESENT) {
+				throw ex;
+			}
+		}
+		{%- endif %}
+	}
+
+{%- endif %}
+
+}
