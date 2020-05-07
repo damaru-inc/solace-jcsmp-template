@@ -10,7 +10,7 @@ module.exports = register => {
     const asyncapi = generator.asyncapi
     let sourcePath = generator.targetDir + sourceHead
     const info = asyncapi.info()
-    let package = generator.templateParams['java-package']
+    let package = generator.templateParams['javaPackage'];
 
     if (!package && info) {
       const extensions = info.extensions()
@@ -22,7 +22,7 @@ module.exports = register => {
     if (package) {
       //console.log("package: " + package)
       const overridePath = generator.targetDir + sourceHead + package.replace(/\./g, '/') + '/'
-      console.log("Moving files from " + sourcePath + " to " + overridePath)
+      //console.log("Moving files from " + sourcePath + " to " + overridePath)
       let first = true
       fs.readdirSync(sourcePath).forEach(file => {
         if (first) {
@@ -36,11 +36,13 @@ module.exports = register => {
       sourcePath = overridePath
     }
 
+    //console.log("sourcePath: " + sourcePath);
+
     for (name in asyncapi.channels()) {
       const channel = asyncapi.channel(name)
       const className = templateUtil.getChannelClass(name, channel);
       const newName = name.replace(/\//g, "-")
-      console.log("Renaming " + newName + " to " + className)
+      //console.log("Renaming " + newName + " to " + className)
       fs.renameSync(path.resolve(sourcePath, newName), path.resolve(sourcePath, className + ".java"))
     }
   })

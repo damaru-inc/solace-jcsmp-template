@@ -157,8 +157,78 @@ filter.groupId = groupId;
 function channelClass([channelName, channel]) {
   return templateUtil.getChannelClass(channelName, channel);
 }
-
 this.channelClass = channelClass;
+
+  // This returns the proper Java type for a schema property.
+  function fixType([name, javaName, property]) {
+
+    //console.log('fixType: ' + name + " " + dump(property));
+    
+    let isArrayOfObjects = false;
+  
+    // For message headers, type is a property.
+    // For schema properties, type is a function.
+    let type = property.type;
+  
+    //console.log("fixType: " + property);
+  
+    if (typeof type == "function") {
+      type = property.type();
+    }
+  
+    // If a schema has a property that is a ref to another schema,
+    // the type is undefined, and the title gives the title of the referenced schema.
+    let ret;
+    if (type === undefined) {
+      if (property.enum()) {
+        ret = _.upperFirst(javaName);
+      } else {
+        // check to see if it's a ref to another schema.
+        ret = property.ext('x-parser-schema-id');
+  
+        if (!ret) {
+          throw new Error("Can't determine the type of property " + name);
+        }
+      }
+    } else if (type === 'array') {
+      if (!property.items()) {
+        throw new Error("Array named " + name + " must have an 'items' property to indicate what type the array elements are.");
+      }
+      let itemsType = property.items().type();
+  
+      if (itemsType) {
+  
+        if (itemsType === 'object') {
+          isArrayOfObjects = true;
+          itemsType = _.upperFirst(javaName);
+        } else {
+          itemsType = typeMap.get(itemsType);
+        }
+      }
+      if (!itemsType) {
+        itemsType = property.items().ext('x-parser-schema-id');
+  
+        if (!itemsType) {
+          throw new Error("Array named " + name + ": can't determine the type of the items.");
+        }
+      }
+      ret = _.upperFirst(itemsType) + "[]";
+    } else if (type === 'object') {
+      ret = _.upperFirst(javaName);
+    } else {
+      ret = typeMap.get(type);
+      if (!ret) {
+        ret = type;
+      }
+    }
+    return [ret, isArrayOfObjects];
+  }
+  filter.fixType = fixType;
+  
+function identifierName(str) {
+  return templateUtil.getIdentifierName(str);
+}
+filter.identifierName = identifierName;
 
 function messageClass([channelName, channel]) {
   let ret = getMessageClass(channel.publish())
@@ -183,6 +253,11 @@ function payloadClass([channelName, channel]) {
   return ret
 }
 filter.payloadClass = payloadClass;
+
+function payloadClassForMessage(message) {
+  return getPayloadClassForMessage(message);
+}
+filter.payloadClassForMessage = payloadClassForMessage;
 
 function queueInfo([channelName, channel, subscribeTopic]) {
   let ret = {}
@@ -210,6 +285,20 @@ function queueInfo([channelName, channel, subscribeTopic]) {
   return ret;
 }
 filter.queueInfo = queueInfo;
+
+function schemaExtraIncludes([schemaName, schema]) {
+
+  //console.log("checkPropertyNames " + schemaName + "  " + schema.type());
+  let ret = {};
+  if(checkPropertyNames(schemaName, schema)) {
+    ret.needJsonPropertyInclude = true;
+  }
+  //console.log("checkPropertyNames:");
+  //console.log(ret);
+  return ret;
+}
+filter.schemaExtraIncludes = schemaExtraIncludes;
+
 
 function seeProp([name, prop]) {
   //if (name == 'account') {
@@ -286,6 +375,60 @@ function topicInfo([channelName, channel]) {
 }
 filter.topicInfo = topicInfo;
 
+//////////////////////////////////////////////////////
+
+// Returns true if any property names will be different between json and java.
+function checkPropertyNames(name, schema) {
+  let ret = false;
+
+  //console.log(JSON.stringify(schema));
+  //console.log('checkPropertyNames: checking schema ' + name + getMethods(schema));
+  
+  var properties = schema.properties();
+  
+
+  if (schema.type() === 'array') {
+    properties = schema.items().properties();
+  }
+
+  //console.log("schema type: " + schema.type());
+
+  for (let propName in properties) {
+    let javaName = _.camelCase(propName);
+    let prop = properties[propName];
+    //console.log('checking ' + propName + ' ' + prop.type());
+
+    if (javaName !== propName) {
+      //console.log("Java name " + javaName + " is different from " + propName);
+      return true;
+    }
+    if (prop.type() === 'object') {
+      //console.log("Recursing into object");
+      let check = checkPropertyNames(propName, prop);
+      if (check) {
+        return true;
+      }
+    } else if (prop.type() === 'array') {
+      //console.log('checkPropertyNames: ' + JSON.stringify(prop));
+      if (!prop.items) {
+        throw new Error("Array named " + propName + " must have an 'items' property to indicate what type the array elements are.");
+      }
+      let itemsType = prop.items.type();
+      //console.log('checkPropertyNames: ' + JSON.stringify(prop.items));
+      //console.log('array of : ' + itemsType);
+      if (itemsType === 'object') {
+        //console.log("Recursing into array");
+        let check = checkPropertyNames(propName, prop.items);
+        if (check) {
+          return true;
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+
 function dump(obj) {
   let s = typeof obj
   for (let p in obj) {
@@ -327,11 +470,33 @@ function getMessageClass(pubOrSub) {
 }
 
 function getPayloadClass(pubOrSub) {
-  let ret
+  let ret;
 
-  if (pubOrSub && pubOrSub._json && pubOrSub._json.message && pubOrSub._json.message.payload) {
-    ret = _.upperFirst(pubOrSub._json.message.payload.title)
+  if (pubOrSub) {
+    //console.log(pubOrSub);
+    let message = pubOrSub.message();
+    if (message) {
+      ret = getPayloadClassForMessage(message);
+    }
   }
+  //console.log("getPayloadClass: " + ret);
+  
+  return ret;
+}
 
-  return ret
+function getPayloadClassForMessage(message) {
+  let ret;
+
+  if (message) {
+    let payload = message.payload();
+
+    if (payload) {
+      ret = payload.ext('x-parser-schema-id');
+      ret = _.camelCase(ret);
+      ret = _.upperFirst(ret);
+    }
+  }
+  //console.log("getPayloadClassForMessage: " + ret);
+  
+  return ret;
 }

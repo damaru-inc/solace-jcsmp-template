@@ -53,8 +53,8 @@ public class {{ className }} {
 
 {% endfor %}
 	// Payload
-{%- set type = message.json().payload.title | upperFirst %}
-{% set name = message.json().payload.title | lowerFirst %}
+{%- set type = message | payloadClassForMessage %}
+{% set name = type | lowerFirst %}
 
 	private {{ type }} {{ name }};
 

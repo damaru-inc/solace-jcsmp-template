@@ -13,6 +13,10 @@
       "description": "The host connection property. Currently this only works with the Solace binder. Example: tcp://myhost.com:55555.",
       "required": false
     },
+    "javaPackage": {
+      "description": "The java package to put classes in.",
+      "required": false
+    },
     "password": {
       "description": "The client password connection property. Currently this only works with the Solace binder.",
       "required": false
