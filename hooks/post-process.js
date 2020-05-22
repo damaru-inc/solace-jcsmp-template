@@ -5,8 +5,8 @@ const templateUtil = new TemplateUtil();
 
 const sourceHead = '/src/main/java/'
 
-module.exports = register => {
-  register('generate:after', generator => {
+module.exports = {
+  'generate:after': generator => {
     const asyncapi = generator.asyncapi
     let sourcePath = generator.targetDir + sourceHead
     const info = asyncapi.info()
@@ -18,6 +18,8 @@ module.exports = register => {
         package = extensions['x-java-package']
       }
     }
+
+    console.log("postprocess package: " + package);
 
     if (package) {
       //console.log("package: " + package)
@@ -45,7 +47,7 @@ module.exports = register => {
       //console.log("Renaming " + newName + " to " + className)
       fs.renameSync(path.resolve(sourcePath, newName), path.resolve(sourcePath, className + ".java"))
     }
-  })
+  }
 }
 
 function dump(obj) {
